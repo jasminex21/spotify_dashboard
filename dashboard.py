@@ -8,6 +8,10 @@ from st_aggrid import AgGrid, JsCode, ColumnsAutoSizeMode, AgGridTheme
 from st_aggrid.grid_options_builder import GridOptionsBuilder
 from datetime import datetime, timedelta
 import pytz
+import requests
+from concurrent.futures import ThreadPoolExecutor
+import time
+
 
 # load environmental vars - includes spotify API credentials
 load_dotenv()
@@ -20,6 +24,14 @@ SCOPES = ["user-read-currently-playing", # read access to a user’s currently p
 TIME_FRAMES = ["Short term", 
                "Medium term", 
                "Long term"]
+
+TIMEZONE = pytz.timezone("US/Central")
+NOW = datetime.now(TIMEZONE)
+MONDAY = (NOW - timedelta(days = NOW.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+
+USER_AGENT = os.getenv('LASTFM_USER_AGENT')
+API_KEY = os.getenv('LASTFM_API_KEY')
+LASTFM_USER = "jasminexx18"
 
 def apply_theme(selected_theme):
     css = f"""
@@ -53,6 +65,62 @@ def apply_theme(selected_theme):
     </style>
     """
     st.markdown(css, unsafe_allow_html=True)
+
+def lastfm_get(payload):
+    """Function to streamline API calls"""
+
+    headers = {'user-agent': USER_AGENT}
+    url = 'https://ws.audioscrobbler.com/2.0/'
+
+    # Add API key and format to the payload
+    payload['api_key'] = API_KEY
+    payload['format'] = 'json'
+
+    response = requests.get(url, headers=headers, params=payload)
+    
+    return response
+
+def get_track_coverart(track_mbid):
+
+    # time.sleep(0.1)
+
+    try:
+        musicbrainz_url = f"https://musicbrainz.org/ws/2/recording/{track_mbid}?inc=releases&fmt=json"
+        response = requests.get(musicbrainz_url)
+
+        if response.status_code == 200:
+            data = response.json()
+            releases = data.get("releases", [])
+
+            if releases:
+                release_mbid = releases[0].get("id")
+                cover_art_url = f"https://coverartarchive.org/release/{release_mbid}/"
+                cover_response = requests.get(cover_art_url)
+
+                if cover_response.status_code == 200:
+                    cover_data = cover_response.json()
+
+                    for image in cover_data.get("images", []):
+
+                        if image.get("front", False):
+                            return image.get("thumbnails")["small"]       
+                        
+    except Exception as e:
+        print(f"Error fetching cover art for {track_mbid}: {e}")
+
+    return "https://lastfm.freetls.fastly.net/i/u/64s/2a96cbd8b46e442fc41c2b86b821562f.png"
+
+def process_track(track):
+
+    track_info = {
+        "rank": track["@attr"]["rank"],
+        # "track_image": get_track_coverart(track["mbid"]) if track["mbid"] else track["image"][1]["#text"],
+        "name": track["name"],
+        "artist": track["artist"]["#text"],
+        "num_streams": track["playcount"],
+    }
+
+    return track_info
 
 THEME = {"background_color": "#082D1B",
          "button_color": "#0E290E",
@@ -262,3 +330,46 @@ else:
      tab_top_artists, 
      tab_top_tracks, 
      tab_recently_played) = st.tabs(["Summary", "Top Artists", "Top Tracks", "Recently Played"])
+    
+    with tab_top_tracks:
+
+        col1, col2 = st.columns(2)
+        with col1: 
+            r = lastfm_get({'method': 'user.getWeeklyTrackChart', 
+                            'user': LASTFM_USER,
+                            'from': MONDAY.timestamp()})
+            week_tracks = r.json()["weeklytrackchart"]
+
+            # with ThreadPoolExecutor(max_workers=2) as executor: 
+            #     results = executor.map(process_track, [track for track in week_tracks["track"] if int(track["playcount"]) > 2])
+            all_week_tracks = pd.DataFrame([process_track(track) for track in week_tracks["track"]])
+
+            st.markdown(f"### Top Tracks since {MONDAY.date()}")
+            builder = GridOptionsBuilder.from_dataframe(all_week_tracks)
+            # TODO: center row contents vertically in their cells
+
+            # allows for artist images to be displayed in the dataframe
+            # builder.configure_column("track_image",
+            #                          headerName="", 
+            #                          width=300,
+            #                          cellRenderer=JsCode("""
+            #                             class UrlCellRenderer {
+            #                             init(params) {
+            #                                 this.eGui = document.createElement('img');
+            #                                 this.eGui.setAttribute('src', params.value);
+            #                                 this.eGui.setAttribute('style', "width:65px;height:65px");
+            #                             }
+            #                             getGui() {
+            #                                 return this.eGui;
+            #                             }
+            #                             }"""
+            #                         )
+            #                     )   
+            builder.configure_grid_options(rowHeight=65) #suppressColumnVirtualisation=True)
+            options = builder.build()
+            grid = AgGrid(all_week_tracks, 
+                        gridOptions=options,
+                        # columns_auto_size_mode=ColumnsAutoSizeMode.NO_AUTOSIZE,
+                        allow_unsafe_jscode=True, 
+                        theme=AgGridTheme.ALPINE,
+                        height=800)
