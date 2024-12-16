@@ -10,7 +10,8 @@ from datetime import datetime, timedelta
 import pytz
 import requests
 from concurrent.futures import ThreadPoolExecutor
-import time
+import plotly.graph_objects as go
+import plotly.express as px
 
 
 # load environmental vars - includes spotify API credentials
@@ -113,11 +114,11 @@ def get_track_coverart(track_mbid):
 def process_track(track):
 
     track_info = {
-        "rank": track["@attr"]["rank"],
+        "Rank": track["@attr"]["rank"],
         # "track_image": get_track_coverart(track["mbid"]) if track["mbid"] else track["image"][1]["#text"],
-        "name": track["name"],
-        "artist": track["artist"]["#text"],
-        "num_streams": track["playcount"],
+        "Track": track["name"],
+        "Artist": track["artist"]["name"],
+        "Streams": track["playcount"],
     }
 
     return track_info
@@ -126,6 +127,11 @@ THEME = {"background_color": "#082D1B",
          "button_color": "#0E290E",
          "inputs": "#547054",
          "text_color": "white"}
+long_periods = ["Last 7 days", "Last month", "Last 3 months", 
+                "Last 6 months", "Last year", "Overall"]
+short_periods = ["7day", "1month", "3month", 
+                 "6month", "12month", "overall"]
+PERIOD_MAPPING = dict(zip(long_periods, short_periods))
 
 # page configurations
 st.set_page_config(
@@ -333,43 +339,73 @@ else:
     
     with tab_top_tracks:
 
-        col1, col2 = st.columns(2)
-        with col1: 
-            r = lastfm_get({'method': 'user.getWeeklyTrackChart', 
-                            'user': LASTFM_USER,
-                            'from': MONDAY.timestamp()})
-            week_tracks = r.json()["weeklytrackchart"]
+        col1, col2 = st.columns([1.5, 1])
+        with col1:
+            period = st.selectbox("Select time period",
+                                  options=long_periods)
+            
+            r = lastfm_get({'method': 'user.getTopTracks', 
+                            'user': "jasminexx18",
+                            'period': PERIOD_MAPPING[period]})
+            week_tracks = r.json()["toptracks"]
 
             # with ThreadPoolExecutor(max_workers=2) as executor: 
             #     results = executor.map(process_track, [track for track in week_tracks["track"] if int(track["playcount"]) > 2])
             all_week_tracks = pd.DataFrame([process_track(track) for track in week_tracks["track"]])
+            max_streams = max(all_week_tracks["Streams"])
 
-            st.markdown(f"### Top Tracks since {MONDAY.date()}")
+            st.markdown(f"### Your Top Tracks: {period}")
             builder = GridOptionsBuilder.from_dataframe(all_week_tracks)
+
             # TODO: center row contents vertically in their cells
 
-            # allows for artist images to be displayed in the dataframe
-            # builder.configure_column("track_image",
-            #                          headerName="", 
-            #                          width=300,
-            #                          cellRenderer=JsCode("""
-            #                             class UrlCellRenderer {
-            #                             init(params) {
-            #                                 this.eGui = document.createElement('img');
-            #                                 this.eGui.setAttribute('src', params.value);
-            #                                 this.eGui.setAttribute('style', "width:65px;height:65px");
-            #                             }
-            #                             getGui() {
-            #                                 return this.eGui;
-            #                             }
-            #                             }"""
-            #                         )
-            #                     )   
-            builder.configure_grid_options(rowHeight=65) #suppressColumnVirtualisation=True)
+            builder.configure_column("Track",
+                                     cellStyle={"fontWeight": "bold"})  
+            
+            builder.configure_grid_options(rowHeight=50, suppressColumnVirtualisation=True) 
+            builder.configure_grid_options(onFirstDataRendered="function() { gridOptions.api.sizeColumnsToFit(); }")
+
             options = builder.build()
+            
+            # custom_css = {
+            #     ".ag-root.ag-unselectable.ag-layout-normal": {
+            #         "font-family": "Outfit, sans-serif !important;"
+            #     },
+            #     ".ag-header-cell-text": {
+            #         "font-family": "Outfit, sans-serif !important;",
+            #         "font-weight": "bolder !important;", 
+            #         "font-size": "larger !important;"
+            #     }
+            # }
+
             grid = AgGrid(all_week_tracks, 
                         gridOptions=options,
-                        # columns_auto_size_mode=ColumnsAutoSizeMode.NO_AUTOSIZE,
+                        columns_auto_size_mode=ColumnsAutoSizeMode.FIT_CONTENTS,
+                        # custom_css=custom_css,
                         allow_unsafe_jscode=True, 
                         theme=AgGridTheme.ALPINE,
-                        height=800)
+                        height=800,
+                        )
+        with col2: 
+            st.markdown("### ")
+            st.markdown("### ")
+            artist_counts = all_week_tracks.value_counts().reset_index()
+            labels = artist_counts["Artist"]
+            values = artist_counts["count"]
+
+            fig = go.Figure(data=[go.Pie(labels=labels, 
+                                         values=values, 
+                                         hole=.3,
+                                         marker=dict(colors=px.colors.qualitative.Alphabet),
+                                         hovertemplate=(
+        '<b>%{label}</b><br>' 
+        '# of tracks: %{value}<br>' 
+        'Pct.: %{percent:.2%}<br>' 
+        '<extra></extra>'
+    ))])
+            fig.update_layout(title = "Artist Representation within your Top Tracks")
+            st.plotly_chart(fig, use_container_width=True)
+
+            # extra stats maybe 
+            # st.markdown(f"#### Additional Stats")
+            # st.markdown(f"{len(all_week_tracks['Artist'].unique())} unique artists are represented")
