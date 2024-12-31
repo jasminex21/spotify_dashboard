@@ -118,7 +118,20 @@ def process_track(track):
         # "track_image": get_track_coverart(track["mbid"]) if track["mbid"] else track["image"][1]["#text"],
         "Track": track["name"],
         "Artist": track["artist"]["name"],
-        "Streams": track["playcount"],
+        "Streams": track["playcount"]
+        # "Duration": track["duration"]
+    }
+
+    return track_info
+
+def extract_track_data(track): 
+    """Extracts track data for user.getRecentTracks"""
+
+    track_info = {
+        "Track": track["name"],
+        "Artist": track["artist"]["#text"],
+        "Album": track["album"]["#text"],
+        "Listened at": track["date"]["#text"]
     }
 
     return track_info
@@ -332,11 +345,91 @@ if platform == "Spotify":
 else: 
 
     # can change the tab options - keeping it this for now
-    (tab_summary, 
+    (tab_this_week, 
      tab_top_artists, 
-     tab_top_tracks, 
-     tab_recently_played) = st.tabs(["Summary", "Top Artists", "Top Tracks", "Recently Played"])
+     tab_top_tracks) = st.tabs(["This Week", "Top Artists", "Top Tracks"])
     
+    with tab_this_week: 
+        tab_top_this_week, tab_recently_played = st.tabs(["Top Tracks", "Recently Played"])
+
+        all_tracks = []
+        i = 1
+
+        initial_response = lastfm_get({'method': 'user.getRecentTracks', 
+                                       'user': "jasminexx18",
+                                       'from': int(MONDAY.timestamp()),
+                                       'limit': '1', 
+                                       'page': i})
+        total_tracks = int(initial_response.json()["recenttracks"]["@attr"]["total"])
+
+        while len(all_tracks) < total_tracks:
+            response = lastfm_get({'method': 'user.getRecentTracks', 
+                                   'user': "jasminexx18",
+                                   'from': int(MONDAY.timestamp()),
+                                   'limit': '200', 
+                                   'page': i})
+            
+            for track in response.json()["recenttracks"]["track"]:
+                if "@attr" not in track.keys():
+                    all_tracks.append(extract_track_data(track))
+            
+            i += 1
+
+        all_tracks = pd.DataFrame(all_tracks)
+
+        with tab_top_this_week:
+            
+            col1, col2 = st.columns([1.5, 1])
+            with col1: 
+                this_week_tracks = all_tracks.groupby(["Track", "Artist", "Album"])["Track"].count().reset_index(name="Streams").sort_values("Streams", ascending=False)
+                this_week_tracks["Rank"] = list(range(1, this_week_tracks.shape[0] + 1))
+                this_week_tracks = this_week_tracks[["Rank", "Track", "Artist", "Album", "Streams"]]
+                
+                st.markdown(f"### Your Top Tracks since {MONDAY.date()}")
+                builder = GridOptionsBuilder.from_dataframe(this_week_tracks)
+                builder.configure_column("Track",
+                                         cellStyle={"fontWeight": "bold"},
+                                         maxWidth=250)  
+                builder.configure_column("Artist",
+                                         maxWidth=200)  
+                builder.configure_column("Album",
+                                         maxWidth=250)  
+                builder.configure_column("Rank",
+                                         maxWidth=100)  
+                builder.configure_column("Streams",
+                                         maxWidth=120)  
+                
+                builder.configure_grid_options(rowHeight=50, suppressColumnVirtualisation=True) 
+                # builder.configure_grid_options(onFirstDataRendered="function() { gridOptions.api.sizeColumnsToFit(); }")
+
+                options = builder.build()
+
+                grid = AgGrid(this_week_tracks, 
+                              gridOptions=options,
+                              columns_auto_size_mode=ColumnsAutoSizeMode.FIT_CONTENTS,
+                              allow_unsafe_jscode=True, 
+                              theme=AgGridTheme.ALPINE,
+                              height=800)
+
+        with tab_recently_played:
+
+                st.markdown(f"### Your Recently Played since {MONDAY.date()}")
+                builder = GridOptionsBuilder.from_dataframe(all_tracks)
+                builder.configure_column("Track",
+                                         cellStyle={"fontWeight": "bold"})  
+                
+                builder.configure_grid_options(rowHeight=50, suppressColumnVirtualisation=True) 
+                # builder.configure_grid_options(onFirstDataRendered="function() { gridOptions.api.sizeColumnsToFit(); }")
+
+                options = builder.build()
+
+                grid = AgGrid(all_tracks, 
+                              gridOptions=options,
+                              columns_auto_size_mode=ColumnsAutoSizeMode.FIT_CONTENTS,
+                              allow_unsafe_jscode=True, 
+                              theme=AgGridTheme.ALPINE,
+                              height=800)
+
     with tab_top_tracks:
 
         col1, col2 = st.columns([1.5, 1])
@@ -352,18 +445,14 @@ else:
             # with ThreadPoolExecutor(max_workers=2) as executor: 
             #     results = executor.map(process_track, [track for track in week_tracks["track"] if int(track["playcount"]) > 2])
             all_week_tracks = pd.DataFrame([process_track(track) for track in week_tracks["track"]])
-            max_streams = max(all_week_tracks["Streams"])
 
             st.markdown(f"### Your Top Tracks: {period}")
             builder = GridOptionsBuilder.from_dataframe(all_week_tracks)
-
-            # TODO: center row contents vertically in their cells
-
             builder.configure_column("Track",
                                      cellStyle={"fontWeight": "bold"})  
             
             builder.configure_grid_options(rowHeight=50, suppressColumnVirtualisation=True) 
-            builder.configure_grid_options(onFirstDataRendered="function() { gridOptions.api.sizeColumnsToFit(); }")
+            # builder.configure_grid_options(onFirstDataRendered="function() { gridOptions.api.sizeColumnsToFit(); }")
 
             options = builder.build()
             
@@ -403,9 +492,18 @@ else:
         'Pct.: %{percent:.2%}<br>' 
         '<extra></extra>'
     ))])
-            fig.update_layout(title = "Artist Representation within your Top Tracks")
+            fig.update_layout(title = "Artist Representation")
             st.plotly_chart(fig, use_container_width=True)
 
+            # durations = all_week_tracks["Duration"].astype(int) / 60
+            # durations_hist = go.Figure(data=[go.Histogram(x=durations, 
+            #                                               xbins=dict(start=min(durations), end=max(durations), size=1))])
+            # durations_hist.update_layout(title = "Distribution of Track Durations", 
+            #                              hovermode='x unified')
+            # st.plotly_chart(durations_hist, use_container_width=True)
             # extra stats maybe 
             # st.markdown(f"#### Additional Stats")
             # st.markdown(f"{len(all_week_tracks['Artist'].unique())} unique artists are represented")
+
+            # artists weighted by rank or # of streams?
+
